@@ -1,0 +1,52 @@
+---
+- hosts: hosts
+  tasks:
+    - name: stop vm
+      virt:
+        name: nvme-raw-offset-l0
+        state: shutdown
+      ignore_errors: yes
+
+    - name: create disk image
+      include_tasks: tasks/virt-builder-create-image.yml
+      vars:
+        - os_version: fedora-34
+        - size: 64G
+        - output: /var/lib/libvirt/images/nvme-raw-offset-l0.img
+        - format: raw
+        - raw_opts: --edit '/etc/selinux/config:s/SELINUX=.*/SELINUX=disabled/' --install qemu-system-x86,driverctl --run-command 'grubby --update-kernel=ALL --args=intel_iommu=on'
+
+    - name: start vm
+      include_tasks: tasks/start-vm.yml
+      vars:
+        - domain: nvme-raw-offset-l0
+        - xml: "{{ lookup('file', 'files/nvme-raw-offset-l0.xml') }}"
+        - host: 192.168.122.192
+
+- hosts: l0
+  tasks:
+    - shell: mount -t virtiofs myfs /mnt
+
+    - modprobe:
+        name: vfio-pci
+        state: present
+
+    - shell: driverctl set-override 0000:08:00.0 vfio-pci
+
+    - shell: systemd-run --unit=qemu-storage-daemon /mnt/build/storage-daemon/qemu-storage-daemon --blockdev driver=nvme,node-name=nvme0,device=0000:08:00.0,namespace=1 --blockdev driver=raw,node-name=l1-1,file=nvme0,offset=0,size=1073741824 --blockdev driver=raw,node-name=l1-2,file=nvme0,offset=1073741824,size=1073741824 --nbd-server addr.type=unix,addr.path=/tmp/nbd.sock,max-connections=2 --export type=nbd,id=nbd-l1-1,node-name=l1-1,name=l1-1,writable=on --export type=nbd,id=nbd-l1-2,node-name=l1-2,name=l1-2,writable=on
+
+    - shell: sleep 2 # hack to wait for socket to come up since we're not using socket activation or fd passing
+
+    - shell: /mnt/build/qemu-img dd bs=4k count=100 if=nbd+unix:///l1-1?socket=/tmp/nbd.sock of=/var/tmp/out.img
+    - shell: /mnt/build/qemu-img dd bs=4k count=100 if=nbd+unix:///l1-2?socket=/tmp/nbd.sock of=/var/tmp/out.img
+
+    - systemd:
+        name: qemu-storage-daemon
+        state: stopped
+
+- hosts: hosts
+  tasks:
+    - name: stop vm
+      virt:
+        name: nvme-raw-offset-l0
+        state: shutdown

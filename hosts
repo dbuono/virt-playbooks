@@ -1,0 +1,5 @@
+[hosts]
+localhost ansible_connection=local ansible_python_interpreter="/usr/bin/env python" ansible_become=yes
+
+[l0]
+nvme-raw-offset-l0
